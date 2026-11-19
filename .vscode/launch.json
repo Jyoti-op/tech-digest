@@ -1,0 +1,29 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Digest: run (preview HTML)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/main.py",
+      "args": ["run", "--force"],
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "Digest: subscribe demo user",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/main.py",
+      "args": ["subscribe", "demo@example.com", "--topics", "AI,Dev,Security"],
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "Digest: list subscribers",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/main.py",
+      "args": ["list"],
+      "console": "integratedTerminal"
+    }
+  ]
+}
