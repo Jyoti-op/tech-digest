@@ -14,7 +14,6 @@ on:
 
 permissions:
   contents: read
-  models: read              # free GitHub Models access for the AI write-ups (no API key needed)
 
 concurrency:
   group: digest
@@ -23,7 +22,10 @@ concurrency:
 jobs:
   send:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 60
+    env:
+      OLLAMA_MODELS: ${{ github.workspace }}/.ollama-models
+      OLLAMA_MODEL: llama3.2:3b
     steps:
       - uses: actions/checkout@v4
 
@@ -31,9 +33,39 @@ jobs:
         with:
           python-version: "3.12"
 
+      # Free AI: an open-source model runs inside this job via Ollama (no account, no API key).
+      - name: Check schedule
+        id: when
+        run: |
+          if [ "${{ github.event_name }}" != "schedule" ] || python -c "
+          import json,sys; sys.path.insert(0,'.')
+          from digest.cli import is_scheduled_time
+          sys.exit(0 if is_scheduled_time(json.load(open('config.json'))['schedule']) else 1)"; then
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "go=false" >> "$GITHUB_OUTPUT"; echo "Not Saturday 10:00 Berlin — skipping."
+          fi
+
+      - name: Cache AI model
+        if: steps.when.outputs.go == 'true'
+        uses: actions/cache@v4
+        with:
+          path: .ollama-models
+          key: ollama-${{ env.OLLAMA_MODEL }}
+
+      - name: Start Ollama
+        if: steps.when.outputs.go == 'true'
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+          sudo systemctl stop ollama 2>/dev/null || true
+          nohup ollama serve > /tmp/ollama.log 2>&1 &
+          for i in $(seq 1 30); do curl -sf http://localhost:11434/api/tags >/dev/null && break; sleep 1; done
+          ollama pull "$OLLAMA_MODEL"
+
       # The database remembers which stories each subscriber already got and caches AI write-ups.
       # It is kept in the Actions cache (never committed), restored from the latest run.
       - name: Restore digest database
+        if: steps.when.outputs.go == 'true'
         uses: actions/cache/restore@v4
         with:
           path: digest.db
@@ -41,7 +73,9 @@ jobs:
           restore-keys: digest-db-
 
       - name: Build and send newsletter
+        if: steps.when.outputs.go == 'true'
         env:
+          AI_PROVIDER: ollama
           DIGEST_SMTP_USER: ${{ secrets.DIGEST_SMTP_USER }}
           DIGEST_SMTP_PASSWORD: ${{ secrets.DIGEST_SMTP_PASSWORD }}
           DIGEST_SUBSCRIBERS: ${{ secrets.DIGEST_SUBSCRIBERS }}
@@ -52,7 +86,7 @@ jobs:
           ${{ inputs.force && '--force' || '' }}
 
       - name: Save digest database
-        if: always()
+        if: always() && steps.when.outputs.go == 'true'
         uses: actions/cache/save@v4
         with:
           path: digest.db

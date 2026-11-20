@@ -1,12 +1,11 @@
 """AI intelligence layer: turns a story into summary / explanation / why-it-matters / takeaways.
 
 Providers (pick with config ai.provider or the AI_PROVIDER env var):
-  github  - GitHub Models, FREE inside GitHub Actions via the built-in GITHUB_TOKEN (no key to create)
-  ollama  - a local model on your PC (free, needs Ollama installed)
+  ollama  - a free open-source model run by Ollama (used inside the GitHub Actions job; also works on your PC)
   openai  - OpenAI API (needs OPENAI_API_KEY)
   claude  - Anthropic Claude (needs ANTHROPIC_API_KEY and `pip install anthropic`)
   none    - no LLM: a free extractive write-up built from the article text
-  auto    - github in Actions, else claude/openai if a key exists, else none
+  auto    - ollama if a local Ollama server answers, else claude/openai if a key exists, else none
 If an LLM call fails for any reason, that story falls back to the extractive write-up.
 """
 from __future__ import annotations
@@ -54,24 +53,37 @@ Return JSON with keys:
 
 
 # ---------------------------------------------------------------- providers
-def _openai_compatible(base_url: str, api_key: str | None, model: str, prompt: str, extra_headers=None) -> str:
+def _openai_compatible(base_url: str, api_key: str | None, model: str, prompt: str, extra_headers=None,
+                       timeout: int = 90) -> str:
     body = {"model": model, "temperature": 0.2, "max_tokens": 900,
             "messages": [{"role": "system", "content": SYSTEM}, {"role": "user", "content": prompt}]}
     headers = {"Content-Type": "application/json", **(extra_headers or {})}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
     req = urllib.request.Request(base_url, data=json.dumps(body).encode(), headers=headers, method="POST")
-    with urllib.request.urlopen(req, timeout=90) as r:
-        data = json.loads(r.read())
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        raw = r.read()
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        raise RuntimeError(f"provider returned non-JSON: {raw[:120]!r}") from None
     return data["choices"][0]["message"]["content"]
+
+
+def _ollama_up(cfg: dict) -> bool:
+    try:
+        urllib.request.urlopen(cfg.get("ollama_url", "http://localhost:11434").rstrip("/") + "/api/tags", timeout=2)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def resolve_provider(cfg: dict) -> str:
     p = (os.environ.get("AI_PROVIDER") or cfg.get("provider") or "auto").lower()
     if p != "auto":
         return p
-    if os.environ.get("GITHUB_ACTIONS") and os.environ.get("GITHUB_TOKEN"):
-        return "github"
+    if _ollama_up(cfg):
+        return "ollama"
     if os.environ.get("ANTHROPIC_API_KEY"):
         return "claude"
     if os.environ.get("OPENAI_API_KEY"):
@@ -80,16 +92,12 @@ def resolve_provider(cfg: dict) -> str:
 
 
 def complete(provider: str, cfg: dict, prompt: str) -> str:
-    if provider == "github":
-        return _openai_compatible("https://models.github.ai/inference/chat/completions",
-                                  os.environ["GITHUB_TOKEN"], cfg["github_model"], prompt,
-                                  {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"})
     if provider == "openai":
         return _openai_compatible("https://api.openai.com/v1/chat/completions",
                                   os.environ["OPENAI_API_KEY"], cfg["openai_model"], prompt)
     if provider == "ollama":
         return _openai_compatible(cfg.get("ollama_url", "http://localhost:11434").rstrip("/") + "/v1/chat/completions",
-                                  None, cfg["ollama_model"], prompt)
+                                  None, cfg["ollama_model"], prompt, timeout=600)
     if provider == "claude":
         from .ai_claude import complete_claude  # imported only when chosen
         return complete_claude(cfg["claude_model"], SYSTEM, prompt)
@@ -145,6 +153,9 @@ class Writer:
         self.provider = resolve_provider(cfg)
         self._last_call = 0.0
         self.disabled_reason = ""
+        self.failures = 0
+        if self.provider == "ollama":
+            self.cfg = {**cfg, "delay_seconds": 0}  # local model: no rate limit to respect
         log.info("AI provider: %s", self.provider)
 
     def _call(self, prompt: str) -> dict:
@@ -167,8 +178,9 @@ class Writer:
             return _clean(self._call(prompt), story, links, self.provider)
         except Exception as e:  # noqa: BLE001
             log.warning("AI write-up failed for %r (%s) — using extractive fallback", story["title"][:60], e)
-            if "401" in str(e) or "403" in str(e) or "429" in str(e):
-                self.disabled_reason = str(e)  # don't hammer a provider that refuses us
+            self.failures += 1
+            if self.failures >= 3 or any(c in str(e) for c in ("401", "403", "404", "429", "non-JSON")):
+                self.disabled_reason = str(e)  # stop calling a provider that keeps failing
             return extractive(story, text, links)
 
     def weekly_takeaway(self, stories: list[dict]) -> dict:

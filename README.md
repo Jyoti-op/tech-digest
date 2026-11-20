@@ -18,9 +18,9 @@ The issue starts with the week's highlights and ends with a **Weekly technology 
 
 | Where it runs | Provider used | Cost |
 |---|---|---|
-| GitHub Actions (the weekly job) | **GitHub Models** via the built-in `GITHUB_TOKEN` | Free |
+| GitHub Actions (the weekly job) | **Ollama + Llama 3.2 (3B)** running inside the job, so no account or key | Free |
 | Your PC, no keys | Extractive fallback: summary plus explanation from the article's own sentences | Free |
-| Your PC with [Ollama](https://ollama.com) | `AI_PROVIDER=ollama` | Free (local) |
+| Your PC with [Ollama](https://ollama.com) running | picked automatically (`ollama pull llama3.2:3b`) | Free (local) |
 | Optional, paid | `AI_PROVIDER=openai` + `OPENAI_API_KEY`, or `AI_PROVIDER=claude` + `ANTHROPIC_API_KEY` (`pip install anthropic`) | Pay per use |
 
 The AI uses only the article text; learning links must come from the article itself, so no made-up URLs.

@@ -10,13 +10,12 @@
 
   "ai": {
     "provider": "auto",
-    "github_model": "openai/gpt-4.1-mini",
     "openai_model": "gpt-4.1-mini",
     "claude_model": "claude-opus-5-5",
-    "ollama_model": "llama3.2",
+    "ollama_model": "llama3.2:3b",
     "ollama_url": "http://localhost:11434",
     "delay_seconds": 4,
-    "article_chars": 4000
+    "article_chars": 2500
   },
 
   "hackernews": { "enabled": true, "limit": 40, "weight": 0.7 },
