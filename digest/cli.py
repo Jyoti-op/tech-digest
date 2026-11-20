@@ -5,10 +5,10 @@ import argparse
 import json
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
-from . import mailer, ranker, render, sources
+from . import ai, mailer, ranker, render, sources
 from .store import Store
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -61,11 +61,42 @@ def pick_balanced(rows, total: int, per_topic: int) -> list:
     return picked
 
 
+def is_scheduled_time(sched: dict, now_utc: datetime | None = None) -> bool:
+    """True when local time (e.g. Europe/Berlin) is the configured weekday + hour.
+    GitHub cron is UTC-only, so the workflow fires at both possible UTC hours and this picks the right one."""
+    from zoneinfo import ZoneInfo
+    local = (now_utc or datetime.now(timezone.utc)).astimezone(ZoneInfo(sched["timezone"]))
+    return local.strftime("%A") == sched["weekday"] and local.hour == sched["hour"]
+
+
+def subscriber_topics(sub, cfg: dict) -> list[str]:
+    """The subscriber's topics that exist in config; none chosen means all configured topics
+    (never 'General', so off-topic front-page stories stay out)."""
+    return [t for t in sub["topics"].split(",") if t in cfg["topics"]] or list(cfg["topics"])
+
+
+def ensure_ai(rows, store: Store, writer: ai.Writer, cfg: dict) -> list[dict]:
+    """Attach an AI write-up to each story, generating (and caching) it only when missing."""
+    out = []
+    for r in rows:
+        story = dict(r)
+        cached = json.loads(story["ai"]) if story.get("ai") else None
+        if not cached or (cached.get("generated_by") == "extractive" and writer.provider != "none"
+                          and not writer.disabled_reason):
+            text, links = sources.fetch_article(story["url"], cfg["ai"].get("article_chars", 4000))
+            cached = writer.write_story(story, text, links)
+            store.save_ai(story["id"], cached)
+            logging.info("  write-up [%s] %s", cached["generated_by"], story["title"][:70])
+        story["ai"] = cached
+        out.append(story)
+    return out
+
+
 def cmd_run(cfg: dict, store: Store, send: bool, force: bool) -> None:
     logging.info("Fetching sources…")
     raw = sources.fetch_all(cfg)
-    ranked = ranker.process(raw, cfg["topics"])
-    logging.info("Fetched %d raw → %d unique stories", len(raw), len(ranked))
+    ranked = ranker.process(raw, cfg["topics"], cfg.get("max_age_days"))
+    logging.info("Fetched %d raw → %d unique recent stories", len(raw), len(ranked))
     sources.enrich_summaries(ranked, cfg.get("summarize_top", 150))
     store.upsert_items(ranked)
 
@@ -74,17 +105,21 @@ def cmd_run(cfg: dict, store: Store, send: bool, force: bool) -> None:
     if not subs:
         logging.info("No subscribers due. Add one: python main.py subscribe you@example.com")
         return
+    writer = ai.Writer(cfg["ai"])
+    name = cfg.get("newsletter_name", "TechPulse")
     for sub in subs:
-        topics = [t for t in sub["topics"].split(",") if t]
-        window = 24 * 7 if sub["frequency"] == "weekly" else 36
-        items = pick_balanced(store.unsent_items(sub["id"], topics, window, 500),
-                              cfg.get("max_items_per_digest", 15), cfg.get("max_items_per_topic", 6))
-        if not items:
+        topics = subscriber_topics(sub, cfg)
+        rows = pick_balanced(store.unsent_items(sub["id"], topics, cfg.get("lookback_hours", 192), 500),
+                             cfg.get("max_items_per_digest", 10), cfg.get("max_items_per_topic", 3))
+        if not rows:
             logging.info("%s: nothing new", sub["email"])
             continue
-        html_body = render.render_html(items, sub)
-        text_body = render.render_text(items, sub)
-        subject = f"Tech Digest · {datetime.now():%d %b} · {items[0]['title'][:60]}"
+        items = ensure_ai(rows, store, writer, cfg)
+        weekly = writer.weekly_takeaway(items)
+        order = topics
+        html_body = render.render_html(items, sub, order, weekly, name)
+        text_body = render.render_text(items, sub, order, weekly, name)
+        subject = f"{name} · week of {datetime.now():%d %b} · {items[0]['title'][:55]}"
         if send:
             try:
                 mailer.send_smtp(cfg["smtp"], sub["email"], subject, html_body, text_body)
@@ -108,8 +143,8 @@ def main(argv: list[str] | None = None) -> None:
 
     s = sp.add_parser("subscribe", help="add or update a subscriber")
     s.add_argument("email")
-    s.add_argument("--topics", default="", help="comma list, e.g. AI,Security (empty = all)")
-    s.add_argument("--frequency", choices=["daily", "weekly"], default="daily")
+    s.add_argument("--topics", default="", help='comma list, e.g. "MCP,AI,Data Engineering" (empty = all)')
+    s.add_argument("--frequency", choices=["daily", "weekly"], default="weekly")
 
     u = sp.add_parser("unsubscribe", help="deactivate by email or token")
     u.add_argument("email_or_token")
@@ -119,6 +154,8 @@ def main(argv: list[str] | None = None) -> None:
     r = sp.add_parser("run", help="fetch, rank and deliver digests")
     r.add_argument("--send", action="store_true", help="really send via SMTP (default: write HTML previews)")
     r.add_argument("--force", action="store_true", help="ignore frequency schedule")
+    r.add_argument("--scheduled", action="store_true",
+                   help="only run if it is now the configured local weekday+hour (used by the cron job)")
 
     t = sp.add_parser("test-email", help="send one short test email to check SMTP settings")
     t.add_argument("to")
@@ -149,4 +186,8 @@ def main(argv: list[str] | None = None) -> None:
         for s in store.subscribers(only_active=False):
             print(f"{'✓' if s['active'] else '✗'} {s['email']:<30} {s['frequency']:<7} {s['topics'] or 'all'}")
     elif args.cmd == "run":
+        if args.scheduled and not is_scheduled_time(cfg["schedule"]):
+            s = cfg["schedule"]
+            print(f"Not {s['weekday']} {s['hour']}:00 in {s['timezone']} right now — skipping this trigger.")
+            return
         cmd_run(cfg, store, send=args.send, force=args.force)

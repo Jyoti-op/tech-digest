@@ -1,6 +1,7 @@
 """Storage: SQLite tables for items, subscribers and deliveries."""
 from __future__ import annotations
 
+import json
 import secrets
 import sqlite3
 from datetime import datetime, timedelta, timezone
@@ -46,6 +47,12 @@ class Store:
         cols = {r["name"] for r in self.db.execute("PRAGMA table_info(items)")}
         if "summary" not in cols:  # migrate databases created before summaries existed
             self.db.execute("ALTER TABLE items ADD COLUMN summary TEXT DEFAULT ''")
+        if "ai" not in cols:  # cached AI write-up (JSON), so a story is only processed once
+            self.db.execute("ALTER TABLE items ADD COLUMN ai TEXT")
+
+    def save_ai(self, item_id: int, ai: dict) -> None:
+        self.db.execute("UPDATE items SET ai=? WHERE id=?", (json.dumps(ai), item_id))
+        self.db.commit()
 
     # ----- items -----
     def upsert_items(self, stories: list[Story]) -> None:

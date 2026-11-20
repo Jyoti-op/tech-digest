@@ -1,14 +1,20 @@
-name: Daily Tech Digest
+name: Weekly TechPulse
 
 on:
   schedule:
-    - cron: "0 6 * * *"   # 06:00 UTC = 07:00 in Western Europe (winter), 08:00 in summer
+    # Saturday 10:00 Europe/Berlin. GitHub cron is UTC only, so fire at both possible
+    # UTC hours (08:00 in summer, 09:00 in winter); the app's --scheduled check keeps the right one.
+    - cron: "0 8,9 * * 6"
   workflow_dispatch:        # "Run workflow" button for sending one now
     inputs:
       force:
-        description: "Ignore daily/weekly schedule"
+        description: "Ignore the weekly schedule"
         type: boolean
         default: false
+
+permissions:
+  contents: read
+  models: read              # free GitHub Models access for the AI write-ups (no API key needed)
 
 concurrency:
   group: digest
@@ -17,7 +23,7 @@ concurrency:
 jobs:
   send:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -25,7 +31,7 @@ jobs:
         with:
           python-version: "3.12"
 
-      # The database remembers which stories each subscriber already got.
+      # The database remembers which stories each subscriber already got and caches AI write-ups.
       # It is kept in the Actions cache (never committed), restored from the latest run.
       - name: Restore digest database
         uses: actions/cache/restore@v4
@@ -34,13 +40,16 @@ jobs:
           key: digest-db-${{ github.run_id }}
           restore-keys: digest-db-
 
-      - name: Build and send digests
+      - name: Build and send newsletter
         env:
           DIGEST_SMTP_USER: ${{ secrets.DIGEST_SMTP_USER }}
           DIGEST_SMTP_PASSWORD: ${{ secrets.DIGEST_SMTP_PASSWORD }}
           DIGEST_SUBSCRIBERS: ${{ secrets.DIGEST_SUBSCRIBERS }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: python main.py run --send ${{ inputs.force && '--force' || '' }}
+        run: >
+          python main.py run --send
+          ${{ github.event_name == 'schedule' && '--scheduled' || '' }}
+          ${{ inputs.force && '--force' || '' }}
 
       - name: Save digest database
         if: always()

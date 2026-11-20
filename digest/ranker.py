@@ -59,7 +59,10 @@ def score(s: Story, now: datetime | None = None) -> float:
     return round(s.weight * engagement * freshness, 4)
 
 
-def process(stories: list[Story], topics: dict[str, list[str]]) -> list[Story]:
+def process(stories: list[Story], topics: dict[str, list[str]], max_age_days: float | None = None) -> list[Story]:
+    if max_age_days:
+        cutoff = datetime.now(timezone.utc).timestamp() - max_age_days * 86400
+        stories = [s for s in stories if s.published_at.timestamp() >= cutoff]
     out = dedupe(stories)
     for s in out:
         s.topic = s.topic or tag_topic(f"{s.title} {s.summary}", topics)

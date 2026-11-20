@@ -163,6 +163,34 @@ GENERIC = re.compile(
     r"join the discussion on this|sign in|javascript is disabled|enable javascript|all rights reserved", re.I)
 
 
+_LINK_RE = re.compile(r'<a\s[^>]*href=["\'](https?://[^"\'#\s]+)["\'][^>]*>(.*?)</a>', re.I | re.S)
+_USEFUL_LINK = re.compile(r"docs?\.|/docs?/|documentation|github\.com/[^/]+/[^/]+|readthedocs|tutorial|guide|arxiv\.org|/learn", re.I)
+
+
+def fetch_article(url: str, max_chars: int = 4000) -> tuple[str, list[dict]]:
+    """Return (main article text, useful links found in it) — for grounding AI write-ups."""
+    try:
+        req = urllib.request.Request(url, headers={**UA, "Accept": "text/html"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            if "html" not in (r.headers.get("Content-Type") or ""):
+                return "", []
+            page = r.read(600_000).decode(r.headers.get_content_charset() or "utf-8", "replace")
+    except Exception:  # noqa: BLE001
+        return "", []
+    body = re.sub(r"<(script|style|nav|header|footer|svg|aside|form)\b.*?</\1>", " ", page, flags=re.I | re.S)
+    paras = [clean_text(p, 2000) for p in re.findall(r"<p(?:\s[^>]*)?>(.*?)</p>", body, re.I | re.S)]
+    text = " ".join(p for p in paras if len(p) >= 40 and not GENERIC.search(p))[:max_chars]
+    links, seen = [], {url}
+    for href, label in _LINK_RE.findall(body):
+        label = clean_text(label, 80)
+        if href not in seen and _USEFUL_LINK.search(href) and len(label) >= 3:
+            seen.add(href)
+            links.append({"title": label, "url": href})
+        if len(links) >= 12:
+            break
+    return text, links
+
+
 def enrich_summaries(stories: list[Story], limit: int = 120) -> None:
     """Fill missing summaries for the top `limit` stories by reading each page's description."""
     for s in stories:  # drop feed descriptions that are just boilerplate
