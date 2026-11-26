@@ -5,7 +5,7 @@ import argparse
 import json
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from . import ai, mailer, ranker, render, sources
@@ -69,12 +69,24 @@ def pick_balanced(rows, total: int, per_topic: int) -> list:
     return picked
 
 
+SEND_WINDOW_HOURS = 24
+
+
 def is_scheduled_time(sched: dict, now_utc: datetime | None = None) -> bool:
-    """True when local time (e.g. Europe/Berlin) is the configured weekday + hour.
-    GitHub cron is UTC-only, so the workflow fires at both possible UTC hours and this picks the right one."""
+    """True from the configured weekday + hour (e.g. Saturday 10:00 Europe/Berlin) until
+    SEND_WINDOW_HOURS later.
+
+    GitHub cron is UTC-only and scheduled runs often start hours late, so an exact-hour
+    check silently skipped the send. Any trigger inside the window may send; the
+    subscriber's last_sent_at (see Store.due_subscribers) makes sure it happens once."""
     from zoneinfo import ZoneInfo
     local = (now_utc or datetime.now(timezone.utc)).astimezone(ZoneInfo(sched["timezone"]))
-    return local.strftime("%A") == sched["weekday"] and local.hour == sched["hour"]
+    days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+    back = (local.weekday() - days.index(sched["weekday"])) % 7
+    start = (local - timedelta(days=back)).replace(hour=sched["hour"], minute=0, second=0, microsecond=0)
+    if start > local:  # the weekday is today but its hour hasn't come yet
+        start -= timedelta(days=7)
+    return local - start < timedelta(hours=SEND_WINDOW_HOURS)
 
 
 def subscriber_topics(sub, cfg: dict) -> list[str]:
@@ -199,6 +211,7 @@ def main(argv: list[str] | None = None) -> None:
     elif args.cmd == "run":
         if args.scheduled and not is_scheduled_time(cfg["schedule"]):
             s = cfg["schedule"]
-            print(f"Not {s['weekday']} {s['hour']}:00 in {s['timezone']} right now — skipping this trigger.")
+            print(f"Outside the send window ({s['weekday']} {s['hour']}:00 {s['timezone']} "
+                  f"+ {SEND_WINDOW_HOURS}h) — skipping this trigger.")
             return
         cmd_run(cfg, store, send=args.send, force=args.force)

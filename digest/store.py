@@ -104,7 +104,9 @@ class Store:
             if force or not s["last_sent_at"]:
                 out.append(s)
                 continue
-            gap = timedelta(days=7 if s["frequency"] == "weekly" else 1) - timedelta(hours=1)
+            # Shorter than the period so a late send one week never blocks the on-time send
+            # the next week, yet long enough that two triggers in one send window can't both send.
+            gap = timedelta(days=6) if s["frequency"] == "weekly" else timedelta(hours=20)
             if datetime.now(timezone.utc) - datetime.fromisoformat(s["last_sent_at"]) >= gap:
                 out.append(s)
         return out

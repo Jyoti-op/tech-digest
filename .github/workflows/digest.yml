@@ -2,9 +2,10 @@ name: Weekly TechPulse
 
 on:
   schedule:
-    # Saturday 10:00 Europe/Berlin. GitHub cron is UTC only, so fire at both possible
-    # UTC hours (08:00 in summer, 09:00 in winter); the app's --scheduled check keeps the right one.
-    - cron: "0 8,9 * * 6"
+    # Saturday 10:00 Europe/Berlin. GitHub cron is UTC only and scheduled runs often start
+    # late (or get dropped), so fire at 08:00 and 09:00 UTC (10:00 Berlin in summer / winter)
+    # plus a 14:00 UTC backup. The app sends once, any time in the 24h window from 10:00 Berlin.
+    - cron: "0 8,9,14 * * 6"
   workflow_dispatch:        # "Run workflow" button for sending one now
     inputs:
       force:
@@ -43,7 +44,7 @@ jobs:
           sys.exit(0 if is_scheduled_time(json.load(open('config.json'))['schedule']) else 1)"; then
             echo "go=true" >> "$GITHUB_OUTPUT"
           else
-            echo "go=false" >> "$GITHUB_OUTPUT"; echo "Not Saturday 10:00 Berlin — skipping."
+            echo "go=false" >> "$GITHUB_OUTPUT"; echo "Outside the Saturday 10:00 Berlin send window — skipping."
           fi
 
       - name: Cache AI model

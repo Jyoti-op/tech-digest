@@ -54,6 +54,40 @@ class Schedule(unittest.TestCase):
         self.assertFalse(cli.is_scheduled_time(self.sched, datetime(2026, 11, 21, 8, 0, tzinfo=timezone.utc)))
         self.assertTrue(cli.is_scheduled_time(self.sched, datetime(2026, 7, 4, 8, 0, tzinfo=timezone.utc)))
 
+    def test_late_github_run_still_sends(self):
+        # The real run #6 started at 15:50 UTC (16:50 Berlin) and used to be skipped.
+        self.assertTrue(cli.is_scheduled_time(self.sched, datetime(2026, 11, 21, 15, 50, tzinfo=timezone.utc)))
+        # Very late, just after midnight Berlin, still inside the 24h window
+        self.assertTrue(cli.is_scheduled_time(self.sched, datetime(2026, 11, 22, 1, 0, tzinfo=timezone.utc)))
+
+    def test_outside_window_skips(self):
+        # Sunday 10:00 Berlin = window closed; Friday = not yet open
+        self.assertFalse(cli.is_scheduled_time(self.sched, datetime(2026, 11, 22, 9, 0, tzinfo=timezone.utc)))
+        self.assertFalse(cli.is_scheduled_time(self.sched, datetime(2026, 11, 20, 15, 0, tzinfo=timezone.utc)))
+
+
+class WeeklyOnce(unittest.TestCase):
+    """Two triggers in one window send once; a late send never blocks next week's."""
+
+    def _store_with_last_sent(self, sent_at):
+        import tempfile
+        from digest.store import Store
+        tmp = tempfile.mkdtemp()
+        store = Store(str(Path(tmp) / "t.db"))
+        store.subscribe("a@x.com", [], "weekly")
+        store.db.execute("UPDATE subscribers SET last_sent_at=?", (sent_at.isoformat(),))
+        store.db.commit()
+        return store
+
+    def test_second_trigger_same_day_is_not_due(self):
+        store = self._store_with_last_sent(datetime.now(timezone.utc) - timedelta(hours=5))
+        self.assertEqual(store.due_subscribers(), [])
+
+    def test_late_send_does_not_block_next_week(self):
+        # Sent late last Saturday (~6 days 18 h before next Saturday's on-time run)
+        store = self._store_with_last_sent(datetime.now(timezone.utc) - timedelta(days=6, hours=18))
+        self.assertEqual(len(store.due_subscribers()), 1)
+
 
 class AIWriter(unittest.TestCase):
     def test_parse_json_with_fences(self):
