@@ -49,6 +49,14 @@ def sync_subscribers_from_env(store: Store) -> None:
         logging.info("Synced %d subscriber(s) from DIGEST_SUBSCRIBERS", len([e for e in raw.split(";") if e.strip()]))
 
 
+def mask_email(email: str) -> str:
+    """'jane.doe@gmail.com' -> 'ja***@gmail.com', so CI logs never show a full address."""
+    local, at, domain = (email or "").partition("@")
+    if not at:
+        return "***"
+    return f"{local[:2]}***@{domain}"
+
+
 def pick_balanced(rows, total: int, per_topic: int) -> list:
     """Highest-scored first, but no single topic may take more than `per_topic` slots."""
     picked, counts = [], {}
@@ -108,11 +116,12 @@ def cmd_run(cfg: dict, store: Store, send: bool, force: bool) -> None:
     writer = ai.Writer(cfg["ai"])
     name = cfg.get("newsletter_name", "TechPulse")
     for sub in subs:
+        who = mask_email(sub["email"])
         topics = subscriber_topics(sub, cfg)
         rows = pick_balanced(store.unsent_items(sub["id"], topics, cfg.get("lookback_hours", 192), 500),
                              cfg.get("max_items_per_digest", 10), cfg.get("max_items_per_topic", 3))
         if not rows:
-            logging.info("%s: nothing new", sub["email"])
+            logging.info("%s: nothing new", who)
             continue
         items = ensure_ai(rows, store, writer, cfg)
         weekly = writer.weekly_takeaway(items)
@@ -124,13 +133,15 @@ def cmd_run(cfg: dict, store: Store, send: bool, force: bool) -> None:
             try:
                 mailer.send_smtp(cfg["smtp"], sub["email"], subject, html_body, text_body)
             except Exception as e:  # noqa: BLE001 — one bad address must not stop the others
-                logging.error("%s: SEND FAILED (%s) — will retry next run", sub["email"], e)
+                # SMTP errors often quote the recipient, so mask it there too
+                logging.error("%s: SEND FAILED (%s) — will retry next run", who,
+                              str(e).replace(sub["email"], who))
                 failures += 1
                 continue
-            logging.info("%s: SENT %d stories", sub["email"], len(items))
+            logging.info("%s: SENT %d stories", who, len(items))
         else:
             path = mailer.write_preview(str(ROOT / cfg["output_dir"]), sub["email"], html_body)
-            logging.info("%s: %d stories → %s", sub["email"], len(items), path)
+            logging.info("%s: %d stories → %s", who, len(items), Path(path).name.replace(sub["email"], who))
         store.record_delivery(sub["id"], [i["id"] for i in items])
     if failures:
         raise SystemExit(f"{failures} digest(s) failed to send")

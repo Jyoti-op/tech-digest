@@ -79,5 +79,15 @@ class AIWriter(unittest.TestCase):
         self.assertEqual(clean_text("<p>Hello&nbsp;<b>world</b></p>"), "Hello world")
 
 
+class Privacy(unittest.TestCase):
+    def test_mask_email_hides_local_part(self):
+        self.assertEqual(cli.mask_email("jane.doe@gmail.com"), "ja***@gmail.com")
+        self.assertEqual(cli.mask_email("a@x.com"), "a***@x.com")
+
+    def test_mask_email_handles_bad_input(self):
+        self.assertEqual(cli.mask_email(""), "***")
+        self.assertEqual(cli.mask_email("not-an-email"), "***")
+
+
 if __name__ == "__main__":
     unittest.main()
